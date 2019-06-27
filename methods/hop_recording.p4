@@ -20,13 +20,13 @@ header ipv6 {
     bit<128> dst;
 }
 
-header ipv6_extension {
+header extension {
     bit<8>  nh;
     bit<8>  hlen;
     bit<48> pad;
 }
 
-header new_tag_h {
+header extension_options {
     bit<8>  typ;
     bit<8>  len;
     bit<48> nid;
@@ -41,10 +41,10 @@ header intrinsic_metadata_t {
 }
 
 struct headers_t {
-    Ethernet_h      ethernet;
-    ipv6            ipv6;
-    ipv6_extension  ext;
-    new_tag_h       new_tag;
+    Ethernet_h      	ethernet;
+    ipv6            	ipv6;
+    extension  	    	ext;
+    extension_options   option;
     intrinsic_metadata_t intrinsic_metadata;
 }
 
@@ -108,6 +108,7 @@ control ingress(inout headers_t hdr, inout user_metadata_t umd, inout standard_m
     apply {
         /* Apply the forawrding table to all packets. */
         forwarding.apply();
+	/* Clones the packet if it leaves the network. */
         if (smd.egress_spec == 0x0301) {
             smd.clone_spec = 0x80000302;
             clone(CloneType.I2E, smd.clone_spec);
@@ -127,10 +128,11 @@ control egress(inout headers_t hdr, inout user_metadata_t umd, inout standard_me
     }
 
     /*
-    Action to add the extension header and update all fields in headers
-    that change as a result of the initialization of the extension header.
+    Action to add the extension header and set all fields of the header. Also update
+    the fields in the IPv6 header that changes as a result of the initialization of
+    the extension header..
     */
-    action init_label() {
+    action init_exthdr() {
         hdr.ext.setValid();
         hdr.ext.nh = hdr.ipv6.nh;
         hdr.ext.hlen = 0;
@@ -139,28 +141,27 @@ control egress(inout headers_t hdr, inout user_metadata_t umd, inout standard_me
     }
 
     /*
-    Action to modify the existing extension header by increasing the header
-    stack with a new NID of the current hop. This action also includes increasing
-    all length fields in headers were needed.
+    Action to add an option to the existing extension header. It sets the option as
+    as valid and the fields in the option to their correct values. It also updates
+    the fields in the IPv6 header.
     */
-    action modify_label() {
-        hdr.new_tag.setValid();
+    action add_option() {
+        hdr.option.setValid();
         hdr.ext.hlen = hdr.ext.hlen + 1;
-        hdr.new_tag.typ = 0x3F;
-        hdr.new_tag.len = 0x06;
+        hdr.option.typ = 0x3F;
+        hdr.option.len = 0x06;
         id.read(hdr.new_tag.nid, 0);
         hdr.ipv6.plen = hdr.ipv6.plen + 8;
     }
 
     /*
-    A label is initiated when there is no NID yet. Then, the NID of the device is
-    added to the label. When the packet is a clone, no NID's are added.
+    An extension header is initiated when there isn't one yet. An option is added to the extension header. When the packet is a clone a timestamp is set as valid. 
     */
     apply {
         if (! hdr.ext.isValid()) {
-            init_label();
+            init_exthdr();
         }
-        modify_label();
+        add_option();
         if (smd.instance_type == 0x8) {
             hdr.intrinsic_metadata.setValid();
         }
@@ -178,7 +179,7 @@ control deparser(packet_out pkt, in headers_t hdr) {
         pkt.emit(hdr.ethernet);
         pkt.emit(hdr.ipv6);
         pkt.emit(hdr.ext);
-        pkt.emit(hdr.new_tag);
+        pkt.emit(hdr.option);
     }
 }
 
