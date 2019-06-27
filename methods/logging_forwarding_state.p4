@@ -2,7 +2,6 @@
 #include <v1model.p4>
 
 #define port_t bit<16>
-#define VERSION 0xFFFFFFFF
 
 header Ethernet_h {
     bit<48> dst;
@@ -27,9 +26,9 @@ header ipv6_extension {
     bit<48> pad;
     bit<8>  otyp;
     bit<8>  olen;
-    bit<8>  track;
+    bit<4>  track;
     bit<8>  version;
-    bit<32> entry;
+    bit<36> entry;
 }
 
 struct user_metadata_t {
@@ -37,8 +36,7 @@ struct user_metadata_t {
 }
 
 struct digest_umd_s {
-    bit<32>  entry;
-    bit<8>   version;
+    bit<36>  entry;
     bit<128> dst;
     bit<16>  plen;
     bit<64>  timestamp;
@@ -92,8 +90,6 @@ egress_spec can be assigned a value to control which output port a packet will g
 egress_port should not be accessed.
  */
 control ingress(inout headers_t hdr, inout user_metadata_t umd, inout standard_metadata_t smd) {
-    digest_umd_s digest_umd;
-    // register<bit<8>>(1) version;
 
     /* An action that takes the desired egress port as an argument. */
     action set_egress(port_t port) {
@@ -118,23 +114,6 @@ control ingress(inout headers_t hdr, inout user_metadata_t umd, inout standard_m
     apply {
         /* Apply the forawrding table to all packets. */
         forwarding.apply();
-        // version.read(umd.version_value, 0);
-        // if (! hdr.ext.isValid()) {
-        //     hdr.ext.setValid();
-        // }
-        // version.read(hdr.ext.version, 0);
-        // if (hdr.ext.version != umd.version_value) {
-        //     hdr.ext.track = 1;
-        // }
-        if (smd.egress_spec == 0x0301) {
-            digest_umd.entry = hdr.ext.entry;
-            // digest_umd.track = hdr.ext.track;
-            digest_umd.version = hdr.ext.version;
-            digest_umd.dst = hdr.ipv6.dst;
-            digest_umd.plen = hdr.ipv6.plen;
-            digest_umd.timestamp = hdr.intrinsic_metadata.ingress_global_timestamp;
-            digest<digest_umd_s>(1, digest_umd);
-        }
     }
 }
 
@@ -143,8 +122,9 @@ Control flow after egress port selection.
 egress_spec should not be modified. egress_port can be read but not modified. The packet can still be dropped.
 */
 control egress(inout headers_t hdr, inout user_metadata_t umd, inout standard_metadata_t smd) {
+    digest_umd_s digest_umd;
     register<bit<8>>(1) version;
-    register<bit<32>>(1) id;
+    register<bit<36>>(1) nid;
 
     action no_action() {
         NoAction();
@@ -160,29 +140,31 @@ control egress(inout headers_t hdr, inout user_metadata_t umd, inout standard_me
         hdr.ext.hlen = 1;
         hdr.ext.otyp = 0x3F;
         hdr.ext.olen = 0x06;
-        hdr.ext.track = 0;
+        hdr.ext.track = 0x0;
         hdr.ipv6.nh = 0x00;
         hdr.ipv6.plen = hdr.ipv6.plen + 16;
-        id.read(hdr.ext.entry, 0);
+        nid.read(hdr.ext.entry, 0);
         version.read(hdr.ext.version, 0);
     }
-
-    // /* Action that will cause the packet to be dropped. */
-    // action drop_packet() {
-    //     mark_to_drop();
-    // }
 
     /*
     Add a version tag if there isn't one yet. If there is already a version tag,
     than this tag is compared with the version tag of this device. If the tags
-    are not equal, the packet will be dropped.
+    are not equal, the Trackable field in the packet will be set to 1.
     */
     apply {
         version.read(umd.version_value, 0);
         if (! hdr.ext.isValid()) {
             init_extension();
         } else if (hdr.ext.version != umd.version_value) {
-            hdr.ext.track = 1;
+            hdr.ext.track = 0x1;
+        }
+        if (smd.egress_spec == 0x0301 && hdr.ext.track == 0x0) {
+            digest_umd.entry = hdr.ext.entry;
+            digest_umd.dst = hdr.ipv6.dst;
+            digest_umd.plen = hdr.ipv6.plen;
+            digest_umd.timestamp = hdr.intrinsic_metadata.ingress_global_timestamp;
+            digest<digest_umd_s>(1, digest_umd);
         }
     }
 }
